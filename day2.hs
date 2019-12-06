@@ -10,6 +10,7 @@ import Control.Monad.State
 import Text.Printf
 import Data.Maybe
 import Debug.Trace
+import AOCUtils
 
 import IntcodeVM
 
@@ -36,7 +37,7 @@ part2 vm = do
         printf "Solution: %d %d -> %d\n" n v (n * 100 + v)
 
 main = do
-  program <- map read . words <$> readFile "day2.input"
+  program <- readInputInts "day2.input"
   let vm = loadVM program
   part1 vm
   part2 vm
