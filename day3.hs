@@ -6,6 +6,9 @@ import Data.Maybe
 import Control.Monad
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Data.Map (Map)
+import qualified Data.Map as Map
+import Data.Function
 
 data Direction
   = L
@@ -21,18 +24,26 @@ type Wire = [Leg]
 
 type Position = (Int, Int)
 
-traceLeg :: (Int, Int) -> Leg -> (Set (Int, Int), (Int, Int))
-traceLeg (x, y) (Leg L d) = (Set.fromList [ (x - n, y) | n <- [1..d] ], (x - d, y))
-traceLeg (x, y) (Leg R d) = (Set.fromList [ (x + n, y) | n <- [1..d] ], (x + d, y))
-traceLeg (x, y) (Leg U d) = (Set.fromList [ (x, y - n) | n <- [1..d] ], (x, y - d))
-traceLeg (x, y) (Leg D d) = (Set.fromList [ (x, y + n) | n <- [1..d] ], (x, y + d))
+traceLeg :: Int -> (Int, Int) -> Leg -> (Map (Int, Int) Int, ((Int, Int), Int))
+traceLeg d0 (x, y) (Leg dir d) =
+  let (dx, dy) = case dir of
+        L -> (-1, 0)
+        R -> (1, 0)
+        U -> (0, -1)
+        D -> (0, 1)
+      points = [ ((x + n * dx, y + n * dy), d0 + n)
+               | n <- [1..d]
+               ]
+  in ( Map.fromList points
+     , last points
+     )
 
-traceWire :: (Int, Int) -> Wire -> (Set (Int, Int), (Int, Int))
-traceWire p0 [] = (Set.empty, p0)
-traceWire p0 (l:ls) =
-  let (s1, p1) = traceLeg p0 l
-      (s2, pn) = traceWire p1 ls
-  in (s1 <> s2, pn)
+traceWire :: Int -> (Int, Int) -> Wire -> (Map (Int, Int) Int, ((Int, Int), Int))
+traceWire d0 p0 [] = (Map.empty, (p0, d0))
+traceWire d0 p0 (l:ls) =
+  let (s1, (p1, d1)) = traceLeg d0 p0 l
+      (s2, vn) = traceWire d1 p1 ls
+  in (s1 <> s2, vn)
 
 loadWires :: FilePath -> IO [Wire]
 loadWires fn = do
@@ -49,12 +60,12 @@ loadWires fn = do
       let str''' = dropWhile (`notElem` "LURD") str''
       return (Leg dir dist, str''')
 
-getWireCrossings :: [Wire] -> Set (Int, Int)
+getWireCrossings :: [Wire] -> Map (Int, Int) Int
 getWireCrossings wires =
-  let traces = map (fst . traceWire (0,0)) wires
+  let traces = map (fst . traceWire 0 (0,0)) wires
   in case traces of
-    x:xs -> foldl' Set.intersection x xs
-    [] -> Set.empty
+    x:xs -> foldl' (Map.intersectionWith (+)) x xs
+    [] -> Map.empty
 
 manhattan :: (Int, Int) -> Int
 manhattan (x,y) = abs x + abs y
@@ -62,4 +73,7 @@ manhattan (x,y) = abs x + abs y
 main = do
   wires <- loadWires "day3.input"
   let crossings = getWireCrossings wires
-  print . Set.findMin . Set.map manhattan $ crossings
+  -- part 1
+  print . Map.findMin . Map.mapKeys manhattan $ crossings
+  -- part 2
+  print . minimumBy (compare `on` snd) . Map.toList $ crossings
