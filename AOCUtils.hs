@@ -14,7 +14,7 @@ keepDigit c
 
 readInputInts :: FilePath -> IO [Int]
 readInputInts =
-  readInputFile (fmap (fmap (dropWhile (not . isDigit))) <$> listToMaybe . reads @Int)
+  readInputFile (fmap (fmap (dropWhile (not . (`elem` "0123456789-")))) <$> listToMaybe . reads @Int)
 
 parseInput :: (String -> Maybe (a, String)) -> String -> ([a], String)
 parseInput p "" = ([], "")
