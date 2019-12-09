@@ -13,24 +13,22 @@ import Text.Printf
 import Data.Maybe
 import Data.List
 
-data RunState i
+data RunState
   = Running
   | Terminated
   | AccessViolation Int
-  | InvalidOpcode i
-  | TooDynamic i
+  | InvalidOpcode Int
+  | InvalidParamMode Int Int
   deriving (Show, Read, Eq, Ord)
 
-data VMOf a =
+data VM =
   VM
     { vmIP :: Int
-    , vmRAM :: IntMap a
+    , vmRAM :: IntMap Int
     }
-    deriving (Show, Functor)
+    deriving (Show)
 
-type VM = VMOf Int
-
-dumpVM :: Show i => VMOf i -> IO ()
+dumpVM :: VM -> IO ()
 dumpVM (VM ip ram) = do
   printf "IP: %d\n" ip
   let max = fromMaybe 0 $ fst <$> IntMap.lookupMax ram
@@ -40,84 +38,88 @@ dumpVM (VM ip ram) = do
     maybe (printf " <NIL>") (printf " %7s" . show) (ram IntMap.!? addr)
   printf "\n"
 
-defVM :: VMOf a
+defVM :: VM
 defVM = VM 0 IntMap.empty
 
-loadVM :: [a] -> VMOf a
+loadVM :: [Int] -> VM
 loadVM program =
   VM 0 (IntMap.fromList $ zip [0..] program)
 
-type MonadVM i m = ExceptT (RunState i) (StateT (VMOf i) m)
+type MonadVM m = ExceptT RunState (StateT VM m)
 
-peek :: Monad m => Int -> MonadVM i m i
+peek :: Monad m => Int -> MonadVM m Int
 peek addr = do
   ram <- gets vmRAM
   maybe (throwE $ AccessViolation addr) pure $ IntMap.lookup addr ram
 
-poke :: Monad m => Int -> i -> MonadVM i m ()
+poke :: Monad m => Int -> Int -> MonadVM m ()
 poke addr val = do
   ram <- gets vmRAM
   let ram' = IntMap.insert addr val ram
   modify $ \vm -> vm { vmRAM = ram' }
 
-class Operand a where
-  add :: a -> a -> a
-  mul :: a -> a -> a
-  toAddr :: a -> Maybe Int
-
-instance Operand Int where
-  add = (+)
-  mul = (*)
-  toAddr = Just
-
-operate :: (Monad m, Operand i, Show i) => String -> (i -> i -> i) -> MonadVM i m ()
-operate label f = do
-  ip <- gets vmIP
-  op1Addr <- peek (ip + 1) >>= mkAddr
-  op2Addr <- peek (ip + 2) >>= mkAddr
-  dstAddr <- peek (ip + 3) >>= mkAddr
-  op1 <- peek op1Addr
-  op2 <- peek op2Addr
-  let dst = f op1 op2
-  poke dstAddr dst
-
-mkAddr :: (Monad m, Operand i) => i -> MonadVM i m Int
-mkAddr i = maybe (throwE $ TooDynamic i) pure . toAddr $ i
 
 numArgs :: Opcode -> Int
-numArgs OpAdd = 3
-numArgs OpMul = 3
+numArgs (OpAdd _ _) = 3
+numArgs (OpMul _ _) = 3
 numArgs OpTerminate = 0
 
-data Opcode
-  = OpAdd
-  | OpMul
-  | OpTerminate
+data ParamMode
+  = PositionMode
+  | ImmediateMode
   deriving (Show, Enum, Eq, Ord, Bounded)
 
-mkOpcode :: (Monad m, Operand i) => i -> MonadVM i m Opcode
+data Opcode
+  = OpAdd ParamMode ParamMode
+  | OpMul ParamMode ParamMode
+  | OpTerminate
+  deriving (Show, Eq, Ord)
+
+getParamMode :: Monad m => Int -> Int -> MonadVM m ParamMode
+getParamMode digit raw =
+  let factor = 10 ^ (digit + 2)
+      rawMode = (raw `div` factor) `mod` 10
+  in case rawMode of
+    0 -> pure PositionMode
+    1 -> pure ImmediateMode
+    x -> throwE (InvalidParamMode digit rawMode)
+
+mkOpcode :: (Monad m) => Int -> MonadVM m Opcode
 mkOpcode i = do
-  mkAddr i >>= \case
-    1 -> pure OpAdd
-    2 -> pure OpMul
+  case i `mod` 100 of
+    1 -> OpAdd <$> getParamMode 0 i <*> getParamMode 1 i
+    2 -> OpMul <$> getParamMode 0 i <*> getParamMode 1 i
     99 -> pure OpTerminate
     x -> throwE (InvalidOpcode i)
 
-step :: (Show i, Operand i, Monad m) => MonadVM i m ()
+getParam :: Monad m => ParamMode -> Int -> MonadVM m Int
+getParam ImmediateMode i = pure i
+getParam PositionMode i = peek i
+
+step :: (Monad m) => MonadVM m ()
 step = do
   ip <- gets vmIP
   opcodeExpr <- peek ip
   opcode <- mkOpcode opcodeExpr
   case opcode of
-    OpAdd -> operate "+" add
-    OpMul -> operate "-" mul
-    OpTerminate -> throwE Terminated
+    OpAdd a b -> do
+      op1 <- getParam a =<< peek (ip + 1)
+      op2 <- getParam b =<< peek (ip + 2)
+      dstAddr <- peek (ip + 3)
+      poke dstAddr (op1 + op2)
+    OpMul a b -> do
+      op1 <- getParam a =<< peek (ip + 1)
+      op2 <- getParam b =<< peek (ip + 2)
+      dstAddr <- peek (ip + 3)
+      poke dstAddr (op1 * op2)
+    OpTerminate ->
+      throwE Terminated
   modify (\vm -> vm { vmIP = ip + 1 + numArgs opcode })
 
-run :: (Show i, Operand i, Monad m) => MonadVM i m ()
+run :: (Monad m) => MonadVM m ()
 run = forever step
 
-runVM :: Monad m => MonadVM i m a -> VMOf i -> m (RunState i, VMOf i, Maybe a)
+runVM :: Monad m => MonadVM m a -> VM -> m (RunState, VM, Maybe a)
 runVM a vm = do
   (result, vm') <- runStateT (runExceptT a) vm
   case result of
