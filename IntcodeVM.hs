@@ -21,18 +21,21 @@ data RunState
   | AccessViolation Int
   | InvalidOpcode Int
   | InvalidParamMode Int Int
+  | InvalidPutMode
   deriving (Show, Read, Eq, Ord)
 
 data VM =
   VM
     { vmIP :: Int
+    , vmOffsetBase :: Int
     , vmRAM :: IntMap Int
     }
     deriving (Show)
 
 dumpVM :: VM -> IO ()
-dumpVM (VM ip ram) = do
+dumpVM (VM ip ofs ram) = do
   printf "IP: %d\n" ip
+  printf "OFS: %d\n" ofs
   let max = fromMaybe 0 $ fst <$> IntMap.lookupMax ram
   forM_ [0..max] $ \addr -> do
     when (addr `mod` 10 == 0) $ do
@@ -41,11 +44,11 @@ dumpVM (VM ip ram) = do
   printf "\n"
 
 defVM :: VM
-defVM = VM 0 IntMap.empty
+defVM = VM 0 0 IntMap.empty
 
 loadVM :: [Int] -> VM
 loadVM program =
-  VM 0 (IntMap.fromList $ zip [0..] program)
+  VM 0 0 (IntMap.fromList $ zip [0..] program)
 
 data VMContext m =
   VMContext
@@ -56,9 +59,12 @@ data VMContext m =
 type MonadVM m = ExceptT RunState (ReaderT (VMContext m) (StateT VM m))
 
 peek :: Monad m => Int -> MonadVM m Int
+peek addr
+  | addr < 0
+  = throwE $ AccessViolation addr
 peek addr = do
   ram <- gets vmRAM
-  maybe (throwE $ AccessViolation addr) pure $ IntMap.lookup addr ram
+  pure $ fromMaybe 0 $ IntMap.lookup addr ram
 
 poke :: Monad m => Int -> Int -> MonadVM m ()
 poke addr val = do
@@ -76,33 +82,36 @@ output val = do
   w <- asks vmOutput
   w val
 
+data Opcode
+  = OpAdd ParamMode ParamMode ParamMode
+  | OpMul ParamMode ParamMode ParamMode
+  | OpInput ParamMode
+  | OpOutput ParamMode
+  | OpJumpIfTrue ParamMode ParamMode
+  | OpJumpIfFalse ParamMode ParamMode
+  | OpLessThan ParamMode ParamMode ParamMode
+  | OpEquals ParamMode ParamMode ParamMode
+  | OpAdjustRelativeBase ParamMode
+  | OpTerminate
+  deriving (Show, Eq, Ord)
+
 numArgs :: Opcode -> Int
-numArgs (OpAdd _ _) = 3
-numArgs (OpMul _ _) = 3
-numArgs OpInput = 1
+numArgs (OpAdd _ _ _) = 3
+numArgs (OpMul _ _ _) = 3
+numArgs (OpInput _) = 1
 numArgs (OpOutput _) = 1
 numArgs (OpJumpIfTrue _ _) = 2
 numArgs (OpJumpIfFalse _ _) = 2
-numArgs (OpLessThan _ _) = 3
-numArgs (OpEquals _ _) = 3
+numArgs (OpLessThan _ _ _) = 3
+numArgs (OpEquals _ _ _) = 3
+numArgs (OpAdjustRelativeBase _) = 1
 numArgs OpTerminate = 0
 
 data ParamMode
   = PositionMode
   | ImmediateMode
+  | RelativeMode
   deriving (Show, Enum, Eq, Ord, Bounded)
-
-data Opcode
-  = OpAdd ParamMode ParamMode
-  | OpMul ParamMode ParamMode
-  | OpInput
-  | OpOutput ParamMode
-  | OpJumpIfTrue ParamMode ParamMode
-  | OpJumpIfFalse ParamMode ParamMode
-  | OpLessThan ParamMode ParamMode
-  | OpEquals ParamMode ParamMode
-  | OpTerminate
-  deriving (Show, Eq, Ord)
 
 getParamMode :: Monad m => Int -> Int -> MonadVM m ParamMode
 getParamMode digit raw =
@@ -111,25 +120,39 @@ getParamMode digit raw =
   in case rawMode of
     0 -> pure PositionMode
     1 -> pure ImmediateMode
+    2 -> pure RelativeMode
     x -> throwE (InvalidParamMode digit rawMode)
 
 mkOpcode :: (Monad m) => Int -> MonadVM m Opcode
 mkOpcode i = do
   case i `mod` 100 of
-    1 -> OpAdd <$> getParamMode 0 i <*> getParamMode 1 i
-    2 -> OpMul <$> getParamMode 0 i <*> getParamMode 1 i
-    3 -> pure OpInput
+    1 -> OpAdd <$> getParamMode 0 i <*> getParamMode 1 i <*> getParamMode 2 i
+    2 -> OpMul <$> getParamMode 0 i <*> getParamMode 1 i <*> getParamMode 2 i
+    3 -> OpInput <$> getParamMode 0 i
     4 -> OpOutput <$> getParamMode 0 i
     5 -> OpJumpIfTrue <$> getParamMode 0 i <*> getParamMode 1 i
     6 -> OpJumpIfFalse <$> getParamMode 0 i <*> getParamMode 1 i
-    7 -> OpLessThan <$> getParamMode 0 i <*> getParamMode 1 i
-    8 -> OpEquals <$> getParamMode 0 i <*> getParamMode 1 i
+    7 -> OpLessThan <$> getParamMode 0 i <*> getParamMode 1 i <*> getParamMode 2 i
+    8 -> OpEquals <$> getParamMode 0 i <*> getParamMode 1 i <*> getParamMode 2 i
+    9 -> OpAdjustRelativeBase <$> getParamMode 0 i
     99 -> pure OpTerminate
     x -> throwE (InvalidOpcode i)
 
 getParam :: Monad m => ParamMode -> Int -> MonadVM m Int
 getParam ImmediateMode i = pure i
 getParam PositionMode i = peek i
+getParam RelativeMode i = do
+  ofs <- gets vmOffsetBase
+  peek (i + ofs)
+
+putParam :: Monad m => ParamMode -> Int -> Int -> MonadVM m ()
+putParam ImmediateMode _ _ =
+  throwE InvalidPutMode
+putParam PositionMode i v =
+  poke i v
+putParam RelativeMode i v = do
+  ofs <- gets vmOffsetBase
+  poke (i + ofs) v
 
 step :: (Monad m) => MonadVM m ()
 step = do
@@ -137,27 +160,27 @@ step = do
   opcodeExpr <- peek ip
   opcode <- mkOpcode opcodeExpr
   mJumpTarget <- case opcode of
-    OpAdd a b -> do
+    OpAdd a b c -> do
       param1 <- peek (ip + 1)
       param2 <- peek (ip + 2)
       op1 <- getParam a param1
       op2 <- getParam b param2
       dstAddr <- peek (ip + 3)
       let dstVal = op1 + op2
-      poke dstAddr dstVal
+      putParam c dstAddr dstVal
       pure Nothing
-    OpMul a b -> do
+    OpMul a b c -> do
       param1 <- peek (ip + 1)
       param2 <- peek (ip + 2)
       op1 <- getParam a param1
       op2 <- getParam b param2
       dstAddr <- peek (ip + 3)
       let dstVal = op1 * op2
-      poke dstAddr dstVal
+      putParam c dstAddr dstVal
       pure Nothing
-    OpInput -> do
+    OpInput a -> do
       dstAddr <- peek (ip + 1)
-      input >>= poke dstAddr
+      input >>= putParam a dstAddr
       pure Nothing
     OpOutput a -> do
       srcParam <- peek (ip + 1)
@@ -178,17 +201,21 @@ step = do
         pure $ Just target
       else
         pure Nothing
-    OpLessThan a b -> do
+    OpLessThan a b c -> do
       lhs <- peek (ip + 1) >>= getParam a
       rhs <- peek (ip + 2) >>= getParam b
       dstAddr <- peek (ip + 3)
-      poke dstAddr $ if lhs < rhs then 1 else 0
+      putParam c dstAddr $ if lhs < rhs then 1 else 0
       pure Nothing
-    OpEquals a b -> do
+    OpEquals a b c -> do
       lhs <- peek (ip + 1) >>= getParam a
       rhs <- peek (ip + 2) >>= getParam b
       dstAddr <- peek (ip + 3)
-      poke dstAddr $ if lhs == rhs then 1 else 0
+      putParam c dstAddr $ if lhs == rhs then 1 else 0
+      pure Nothing
+    OpAdjustRelativeBase a -> do
+      delta <- peek (ip + 1) >>= getParam a
+      modify (\vm -> vm { vmOffsetBase = vmOffsetBase vm + delta })
       pure Nothing
     OpTerminate ->
       throwE Terminated
