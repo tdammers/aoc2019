@@ -14,7 +14,6 @@ runAmpChain :: VM -> [Int] -> IO Int
 runAmpChain vm [] =
   pure 0
 runAmpChain vm phases = do
-  print phases
   inputVars@(inputVar0:inputVarsN) <- forM phases newMVar
   let outputVars = inputVarsN ++ [inputVar0]
   (_, results) <- concurrently
@@ -22,8 +21,8 @@ runAmpChain vm phases = do
     (forConcurrently (zip inputVars outputVars) $ \(inputVar, outputVar) -> do
       runVMWith (liftIO $ takeMVar inputVar) (liftIO . putMVar outputVar) run vm
     )
-  forM_ (zip [0..] results) $ \(i, (exitCode, vm', _)) -> do
-    printf "%d: %s\n" (i :: Int) (show exitCode)
+  -- forM_ (zip [0..] results) $ \(i, (exitCode, vm', _)) -> do
+  --   printf "%d: %s\n" (i :: Int) (show exitCode)
   readMVar inputVar0
 
 part1 vm = do
@@ -35,5 +34,5 @@ part2 vm = do
 main = do
   program <- readInputInts "day7.input"
   let vm = loadVM program
-  part1 vm
+  -- part1 vm
   part2 vm
