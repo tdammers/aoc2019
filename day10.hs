@@ -24,14 +24,6 @@ cellToSet :: Int -> Int -> Char -> Set (Int, Int)
 cellToSet x y '#' = Set.singleton (x, y)
 cellToSet _ _ _ = Set.empty
 
-(x, y) ^+^ (dx, dy) = (x + dx, y + dy)
-
-(x, y) ^-^ (dx, dy) = (x - dx, y - dy)
-
-(x, y) ^* s = (x * s, y * s)
-
-(*^) = flip (^*)
-
 -- linearly correlated:
 -- x1/y1 == x2/y2
 -- x1 * y2 == x2 * y1
