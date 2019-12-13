@@ -8,12 +8,6 @@ import Data.Function
 import Data.Char
 import Control.Monad
 
-chunks :: Int -> [a] -> [[a]]
-chunks n [] = []
-chunks n xs =
-  let (x, r) = splitAt n xs
-  in x : chunks n r
-
 part1 :: [Int] -> IO ()
 part1 rawData =
   let layers = chunks (25 * 6) rawData

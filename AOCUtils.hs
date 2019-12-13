@@ -9,6 +9,8 @@ where
 import Data.List
 import Data.Char
 import Data.Maybe
+import Data.Vector (Vector)
+import qualified Data.Vector as Vector
 
 keepDigit :: Char -> Char
 keepDigit c
@@ -35,28 +37,45 @@ readInputFile p fn =
     (items, "") -> return items
     (_, rem) -> error $ "Unexpected: " ++ show rem
 
-class Num a => Vec f a | f -> a where
-  (^+^) :: Num a => f -> f -> f
-  (^-^) :: Num a => f -> f -> f
-
+class Vec f a | f -> a where
   componentWise :: (a -> a) -> f -> f
   componentWise2 :: (a -> a -> a) -> f -> f -> f
 
-  (^*) :: f -> a -> f
-  (*^) :: a -> f -> f
-  (^+^) = componentWise2 (+)
-  (^-^) = componentWise2 (+)
-  (*^) = \s x -> componentWise (s *) x
-  (^*) = \x s -> componentWise (* s) x
+(^+^) :: (Vec f a, Num a) => f -> f -> f
+(^+^) = componentWise2 (+)
 
-instance Num a => Vec (a,a) a where
+(^-^) :: (Vec f a, Num a) => f -> f -> f
+(^-^) = componentWise2 (+)
+
+(^*) :: (Vec f a, Num a) => f -> a -> f
+(^*) = \x s -> componentWise (* s) x
+
+(*^) :: (Vec f a, Num a) => a -> f -> f
+(*^) = \s x -> componentWise (s *) x
+
+instance Vec (a,a) a where
   componentWise f (x, y) =
     (f x, f y)
   componentWise2 f (x1, y1) (x2, y2) =
     (f x1 x2, f y1 y2)
 
-instance Num a => Vec (a,a,a) a where
+instance Vec (a,a,a) a where
   componentWise f (x, y, z) =
     (f x, f y, f z)
   componentWise2 f (x1, y1, z1) (x2, y2, z2) =
     (f x1 x2, f y1 y2, f z1 z2)
+
+instance Vec [a] a where
+  componentWise = map
+  componentWise2 = zipWith
+
+instance Vec (Vector a) a where
+  componentWise = Vector.map
+  componentWise2 = Vector.zipWith
+
+chunks :: Int -> [a] -> [[a]]
+chunks n [] = []
+chunks n xs =
+  let (x, r) = splitAt n xs
+  in x : chunks n r
+
